@@ -1,0 +1,13 @@
+# IDE
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local model weights (do NOT commit)
+minimind/weights/
+
+# OS junk
+.DS_Store
+Thumbs.db
