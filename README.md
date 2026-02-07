@@ -1,271 +1,183 @@
+# MiniMind-StructGate Runtime
 
-# MiniMind × StructGate Runtime
+**Phase 3: Runtime Telemetry for LLM Training and Inference**
 
-**White-Box Runtime Telemetry for LLM Generation**
+MiniMind-StructGate is a **runtime observability and telemetry framework** for large language models (LLMs).  
+It is designed as an **engineering-grade measurement instrument**, not an optimizer, policy learner, or safety solution.
 
-> A runtime-level, white-box monitoring instrument for large language models.
-> Focused on *observability*, not optimization or autonomy.
-
----
-
-## 1. What This Project Is
-
-This project is an **engineering instrument**, not an agent framework.
-
-It provides **runtime telemetry** for large language model inference and generation, exposing both **output-level uncertainty** and **internal representational dynamics** in real time.
-
-The system is designed to answer one core question:
-
-> *“What is the model’s cognitive / structural state **while it is generating**, not just after it finishes?”*
+The project focuses on **white-box, runtime-level probes** that monitor internal model dynamics during training and inference, under strict scope and falsifiability constraints.
 
 ---
 
-## 2. What This Project Is NOT (Explicit Boundaries)
+## What This Project Is
 
-To avoid category errors, this project explicitly **does NOT** aim to be:
-
-* ❌ An autonomous agent
-* ❌ An alignment solution
-* ❌ A safety guarantee
-* ❌ A prompt-engineering framework
-* ❌ A model optimizer or trainer
-* ❌ A controller that modifies generation behavior
-
-**Phase 3 is strictly observational.**
-No interventions. No steering. No feedback loops.
+- A **runtime telemetry system** for LLMs
+- A **Phase 3 (observation-only)** artifact: no control, no optimization
+- A collection of **internal probes** (e.g. SVD, entropy) attached via PyTorch hooks
+- A bridge from **toy models → real Hugging Face training pipelines**
+- A **reproducible, CPU-compatible** experimental framework
 
 ---
 
-## 3. System Overview
+## What This Project Is NOT
 
-At a high level, the runtime stack is:
+See [`docs/not_this_project.md`](docs/not_this_project.md) for the full list.
 
-```
-Model Adapter
-   ↓
-Runtime / Generation Engine
-   ↓
-Probe Suite (Telemetry)
-   ↓
-StructGate (Decision Interface)
-```
+In short, this project is **NOT**:
 
-Key design principle:
-
-> **Separate observation from action.**
-> Telemetry first. Policy later.
-
----
-graph TD
-    User[User Prompt] --> Adapter[Generation Adapter]
-    Adapter --> Engine[Generation Engine]
-    
-    subgraph "Phase 3: Telemetry Loop"
-        Engine -- Token & States --> Probes[Probe Suite]
-        Probes -- Analyze --> Metrics
-        
-        subgraph "Probe Layers"
-            Metrics --> Output[Output: Entropy/Margin]
-            Metrics --> Internal[Internal: Delta/Norm]
-            Metrics --> Temporal[Trajectory: SVD Ratio]
-        end
-    end
-    
-    Metrics -- Telemetry Data --> Gate[StructGate Interface]
-    Gate -- Policy Check --> Decision{Decision}
-    Decision -- ALLOW --> Log[Log & Continue]
-    Decision -- REFUSE --> Signal[Signal Flag (No Action Yet)]
-    
-    style User fill:#f9f,stroke:#333
-    style Gate fill:#bbf,stroke:#333
-    style Probes fill:#dfd,stroke:#333
-
-## 4. Phase Roadmap (Current Status)
-
-| Phase   | Name                        | Status       |
-| ------- | --------------------------- | ------------ |
-| Phase 1 | Runtime plumbing            | ✅ Complete   |
-| Phase 2 | Output-level probes         | ✅ Complete   |
-| Phase 3 | White-box runtime telemetry | ✅ **Frozen** |
-| Phase 4 | Alarm / action interface    | ⏸ Planned    |
-| Phase 5 | Meta-control / outer loop   | ⏳ Future     |
-
-This repository currently **freezes at Phase 3**.
+- ❌ A training algorithm or optimizer
+- ❌ An alignment or safety solution
+- ❌ A reinforcement learning agent
+- ❌ A benchmark or leaderboard project
+- ❌ A claim of general failure prediction
+- ❌ A production control system
+- ❌ A theory paper disguised as code
 
 ---
 
-## 5. Phase 3: White-Box Runtime Telemetry (Core Contribution)
+## Phase Overview
 
-Phase 3 upgrades the system from **black-box output inspection** to **white-box runtime observability**, including **token-by-token internal signals during generation**.
+### Phase 3.4 — Training-Time Telemetry (Toy / Controlled)
 
-### 5.1 Probe Taxonomy
+**Goal:**  
+Demonstrate that **structural signals** (e.g. representation collapse) can be observed **before loss divergence**, in controlled settings.
 
-Phase 3 probes are deliberately structured into three layers.
+**Key properties:**
+- White-box hooks into Transformer layers
+- Sliding-window SVD probe on hidden states
+- Explicit synthetic failure injection
+- Clear separation: *monitor observes, loop decides*
 
----
-
-### A. Output Probes (Surface Signals)
-
-Operate purely on model logits.
-
-* **Entropy**
-
-  * Measures epistemic uncertainty of next-token distribution
-  * High entropy ⇒ model confusion / underspecification
-
-* **Margin**
-
-  * Difference between top-1 and top-2 probabilities
-  * Low margin ⇒ fragile confidence
-
-These are *necessary but shallow* indicators.
+**Entry point:**
+```bash
+python experiments/demo_training_monitor.py
+````
 
 ---
 
-### B. Instant Internal Probes (Stateless, White-Box)
+### Phase 3.5 — Hugging Face + LoRA Integration
 
-Operate on hidden states of the final transformer layers.
+**Goal:**
+Verify that the same telemetry probes are **compatible with industrial-standard pipelines**.
 
-* **Layer Delta**
+**What this phase demonstrates:**
 
-  * `1 − cosine_similarity(last_layer, prev_layer)`
-  * High delta ⇒ internal reasoning discontinuity
+* Hugging Face `transformers` integration
+* PEFT / LoRA fine-tuning
+* Runtime hooks on real pre-trained LLMs (e.g. Qwen2.5-0.5B)
+* Observation-only behavior under healthy training
 
-* **Activation Energy (Norm)**
+**Entry point:**
 
-  * L2 norm of final hidden state
-  * Abnormally high or low norms often correlate with OOD or degraded semantic activation
-
-These probes expose **structural stress** inside the network.
-
----
-
-### C. Trajectory Probes (Stateful, Temporal)
-
-Operate over **time**, not single tokens.
-
-* **SVD Probe**
-
-  * Maintains a sliding window of hidden states
-  * Computes singular value spectrum of the trajectory
-  * Key metric: **top-1 singular value ratio**
-
-Interpretation:
-
-* High ratio ⇒ low-rank trajectory
-* Indicates representation collapse, repetition attractors, or degenerate dynamics
-
-⚠️ Engineering note:
-
-> SVD ratio is a **necessary but not sufficient** condition for collapse.
-> Phase 3 makes this explicit and avoids semantic over-claims.
-
----
-
-## 6. Generation Telemetry (Phase 3.3)
-
-Phase 3.3 introduces a **generation-aware runtime engine**.
-
-### GenerationEngine
-
-* Pull-based token generation
-* Observes **every generated token**
-* Feeds continuous telemetry into the probe suite
-* Acts as a **flight data recorder**, not a controller
-
-Logged per token:
-
-```json
-{
-  "token": "<str>",
-  "metrics": {
-    "entropy": "<float>",
-    "margin": "<float>",
-    "layer_delta": "<float>",
-    "activation_energy": "<float>",
-    "sv_ratio": "<float>"
-  }
-}
+```bash
+python experiments/demo_hf_lora_telemetry.py
 ```
 
-This enables **time-series analysis** of internal model dynamics.
+> No collapse is expected in this demo.
+> Absence of failure is the correct and honest result.
 
 ---
 
-## 7. StructGate: Decision Interface (Phase 3 Scope)
+## Repository Structure
 
-StructGate in this phase acts only as a **decision interface**, not an executor.
+```
+minimind-structgate-runtime/
+│
+├── README.md                 # This document
+├── requirements.txt          # Minimal runtime dependencies
+│
+├── docs/
+│   ├── scope.md              # Formal scope and phase boundaries
+│   ├── not_this_project.md   # Explicit non-goals
+│   └── safety_envelope.png   # Conceptual diagram
+│
+├── experiments/
+│   ├── README.md                     # Experiment index and usage notes
+│   ├── demo_training_monitor.py      # Phase 3.4 training telemetry demo
+│   ├── demo_hf_lora_telemetry.py     # Phase 3.5 HF + LoRA integration demo
+│   ├── demo_generation_telemetry.py
+│   ├── demo_svd_mechanics.py
+│   └── visualize_boundary.py
+│
+├── runtime/
+│   ├── svd_probe.py           # Core SVD telemetry probe
+│   ├── token_entropy_probe.py
+│   ├── internal_probes.py
+│   ├── multi_probe.py
+│   ├── generation_engine.py
+│   └── interface.py
+│
+├── structgate/
+│   ├── decision.py            # Decision interface (no execution)
+│   ├── fusion_policy.py
+│   └── simple_policy.py
+│
+└── minimind/
+    └── model.py               # Minimal internal toy model (no weights tracked)
+```
 
-* Receives merged telemetry
-* Applies explicit, inspectable policies
-* Emits symbolic actions (e.g. `ALLOW`, `REFUSE`)
-
-Important constraint:
-
-> **StructGate does not modify generation in Phase 3.**
-
-It exists to formalize the boundary between **measurement** and **action**, preparing for Phase 4 without crossing it.
-
----
-
-## 8. Why This Matters (Engineering Perspective)
-
-Most LLM tooling evaluates models **after the fact**.
-
-This system enables:
-
-* Observing **instability before failure**
-* Distinguishing:
-
-  * high uncertainty vs
-  * structural inconsistency vs
-  * trajectory collapse
-* Treating LLMs as **dynamic systems**, not static text generators
-
-The mental model is closer to:
-
-> **Industrial instrumentation**
-> (flight recorders, engine telemetry, alarm sensors)
-
-—not autonomous agents.
-
----
-
-## 9. Design Philosophy
-
-* Deterministic execution (explicit device control)
-* Explicit data contracts
-* Clear phase boundaries
-* No hidden autonomy
-* No semantic over-claims
-
-The project prioritizes **engineering honesty** over flashy demos.
+> **Note:**
+> Model weights are intentionally excluded from version control.
+> All demos are reproducible without proprietary assets.
 
 ---
 
-## 10. What Comes Next (Not Implemented Here)
+## Design Principles
 
-Future phases are intentionally **out of scope** for this repository version:
+1. **Observation ≠ Control**
+   Telemetry modules never stop training or alter gradients.
 
-* Phase 4: Alarm → Action mapping (modular, system-specific)
-* Phase 5: Meta-control / goal evolution (outer loop)
+2. **Human-in-the-Loop Verification**
+   All probes are heuristic, explicitly labeled, and auditable.
 
-These are deferred to avoid collapsing observation and control into an unsafe abstraction.
+3. **Falsifiability First**
+   Claims are limited to what the demos actually demonstrate.
 
----
-
-## 11. Intended Audience
-
-* Systems engineers
-* Control / safety researchers
-* Runtime infrastructure developers
-* Engineers evaluating LLM behavior under uncertainty
-
-This is **not** a beginner tutorial and **not** a consumer AI product.
+4. **Compatibility over Performance**
+   The goal is pipeline integration, not SOTA metrics.
 
 ---
 
-## 12. Status
+## Development Protocol (AI-Assisted Engineering)
 
-**Phase 3 complete. Frozen for review, reuse, and integration.**
+This project follows a strict **human-in-the-loop verification workflow**.
+
+While LLMs were used as implementation assistants, all code is subject to:
+
+* Explicit scope constraints
+* Cross-model adversarial review
+* Local execution audits
+* Manual ownership of all design decisions
+
+No code is merged unless it runs, aligns with documented assumptions, and respects the defined falsification boundaries.
+
+---
+
+## Relationship to Other Projects
+
+This repository fits into a larger, coherent research–engineering arc:
+
+```
+Info-Flow-Dynamics
+        ↓
+Vacuum-X × Snake-SHM
+        ↓
+MiniMind-StructGate Runtime (this repo)
+```
+
+Each layer builds on the previous one without retroactive justification or scope creep.
+
+---
+
+## Status
+
+* **Phase 3.4:** Frozen
+* **Phase 3.5:** Frozen
+* **Future phases:** Out of scope for this repository
+
+---
+
+## License
+
+MIT
 
