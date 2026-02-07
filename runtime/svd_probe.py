@@ -1,68 +1,81 @@
-"""
-SVD Probe (Stateful) - Phase 3.2 FINAL
-====================================
-Analyzes spectral properties of hidden-state trajectories.
-
-ENGINEERING NOTE
-----------------
-This probe analyzes the accumulation buffer of hidden states passed
-to the runtime.
-
-- With static prompts: detects attractor / fixed-point anisotropy.
-- With generation loops (future Phase 3.3): detects trajectory collapse.
-
-INTERPRETATION
---------------
-High sv_ratio => low-rank trajectory (anisotropy).
-This is a NECESSARY but NOT SUFFICIENT condition for repetition or collapse.
-"""
-
 import torch
-from typing import Any, List, Optional
-from runtime.interface import ModelOutput
+import numpy as np
 
 
 class SVDProbe:
-    def __init__(self, window_size: int = 10):
+    """
+    SVD-based structural probe.
+
+    Supports two input modes:
+    1. Dict-based trace (generation-time)
+       { "last_hidden_state": Tensor }
+    2. Tensor-based hidden state (training-time)
+       Tensor[Dim] or Tensor[Batch, Seq, Dim]
+    """
+
+    def __init__(self, window_size=10):
         self.window_size = window_size
-        self.buffer: List[torch.Tensor] = []
+        self.buffer = []
 
-    def observe(self, model_raw_output: Any) -> ModelOutput:
-        h_last = model_raw_output.get("last_hidden_state")
+    def _extract_vector(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize input tensor to 1D feature vector [Dim].
+        """
+        if x.ndim == 1:
+            return x
+        if x.ndim == 2:
+            # [Seq, Dim] → take last token
+            return x[-1]
+        if x.ndim == 3:
+            # [Batch, Seq, Dim] → first sample, last token
+            return x[0, -1]
+        raise ValueError(f"Unsupported tensor shape: {x.shape}")
 
-        if h_last is None:
+    def observe(self, model_output):
+        """
+        Observe model internal state and compute SVD ratio.
+
+        Accepts:
+        - dict with 'last_hidden_state'
+        - torch.Tensor
+        """
+        # --- Normalize input ---
+        if isinstance(model_output, dict):
+            h = model_output.get("last_hidden_state", None)
+            if h is None:
+                return {}
+            vec = self._extract_vector(h)
+
+        elif torch.is_tensor(model_output):
+            vec = self._extract_vector(model_output)
+
+        else:
             return {}
 
-        # Update rolling buffer
-        self.buffer.append(h_last.detach().clone())
+        vec = vec.detach().cpu().float()
+
+        # --- Sliding window ---
+        self.buffer.append(vec.numpy())
+        if len(self.buffer) < self.window_size:
+            return {}
+
         if len(self.buffer) > self.window_size:
             self.buffer.pop(0)
 
-        # Not ready → return None (IMPORTANT)
-        if len(self.buffer) < self.window_size:
-            return {
-                "sv_ratio": None,
-                "svd_ready": False,
-            }
+        X = np.stack(self.buffer)  # [W, Dim]
 
-        # Stack into matrix: [window, hidden_dim]
-        M = torch.stack(self.buffer)
-
-        # Centering improves spectral interpretability
-        M_centered = M - M.mean(dim=0)
-
+        # --- SVD ---
         try:
-            S = torch.linalg.svdvals(M_centered)
-            total = S.sum() + 1e-9
-            ratio = (S[0] / total).item()
+            _, s, _ = np.linalg.svd(X, full_matrices=False)
+        except np.linalg.LinAlgError:
+            return {}
 
-            return {
-                "sv_ratio": ratio,
-                "svd_ready": True,
-            }
-        except Exception as e:
-            print(f"[SVDProbe] numerical failure: {e}")
-            return {
-                "sv_ratio": None,
-                "svd_ready": False,
-            }
+        if s.sum() == 0:
+            return {}
+
+        sv_ratio = float(s[0] / s.sum())
+
+        return {
+            "sv_ratio": sv_ratio,
+            "rank": int((s > 1e-6).sum())
+        }
